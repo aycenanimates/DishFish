@@ -6,6 +6,7 @@
 <title>DishFish</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&family=Work+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <style>
 :root{
   --ocean-900:#0B79B0; --ocean-700:#2FB6E0; --ocean-100:rgba(255,255,255,.55);
@@ -213,10 +214,14 @@ textarea,input.ci{width:100%;padding:10px 14px;border:1.5px solid rgba(11,121,17
 <script>
 function load(k,d){try{return JSON.parse(localStorage.getItem(k))||d}catch(e){return d}}
 function save(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}
+const SUPABASE_URL = 'https://ukqhohirwxdalcruzfyl.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVrcWhvaGlyd3hkYWxjcnV6ZnlsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA3ODExNTQsImV4cCI6MjEwNjM1NzE1NH0.2KF0IrzervHdTn3H6MtPlalpcm_ojKXuFeAb0APOGPg';
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
 let users = load('df_users',{});
 let videos = load('df_videos',[]);
 let messages = load('df_messages',[]);
-let session = load('df_session',null);
+let session = null;
 let view = {page:'home'};
 const CATS = ['All','New','Trending','Popular','Featured'];
 const AVATARS = ['#2FB6E0','#0B79B0','#7ED957','#5CB833','#6FE3D6','#8FD6FF'];
@@ -256,7 +261,7 @@ function renderAccount(){
 }
 
 function go(page,arg){ view={page,arg}; render(); window.scrollTo(0,0); }
-function logout(){ session=null; save('df_session',null); renderAccount(); go('home'); }
+async function logout(){ await sb.auth.signOut(); session=null; renderAccount(); go('home'); }
 function doSearch(){ go('search', document.getElementById('search').value.trim()); }
 
 function openAuth(mode){
@@ -265,8 +270,10 @@ function openAuth(mode){
   bg.innerHTML=`<div class="modal">
     <h3>${mode==='login'?'Welcome back':'Join DishFish'}</h3>
     <p class="sub">${mode==='login'?'Sign in to continue.':'Create an account to upload, like, and comment.'}</p>
-    <input id="authUser" placeholder="Username">
+    ${mode==='signup' ? `<input id="authName" placeholder="Username">` : ``}
+    <input id="authEmail" type="email" placeholder="Email">
     <input id="authPass" type="password" placeholder="Password">
+    <p id="authMsg" style="font-size:12.5px;color:#b43b2a;display:none;margin:-4px 0 10px;"></p>
     <div class="row">
       <button class="btn btn-outline" style="color:var(--ink-900);border-color:var(--ocean-100)" onclick="closeModal('authModal')">Cancel</button>
       <button class="btn btn-coral" onclick="doAuth('${mode}')">${mode==='login'?'Sign in':'Sign up'}</button>
@@ -279,15 +286,28 @@ function openAuth(mode){
   </div>`;
 }
 function closeModal(id){ const m=document.getElementById(id); if(m) m.remove(); }
-function doAuth(mode){
-  const u=document.getElementById('authUser').value.trim();
+function authErr(text){ const el=document.getElementById('authMsg'); el.textContent=text; el.style.display='block'; }
+async function doAuth(mode){
+  const email=document.getElementById('authEmail').value.trim();
   const p=document.getElementById('authPass').value;
-  if(!u||!p){alert('Enter a username and password.');return;}
+  if(!email||!p){ authErr('Enter an email and password.'); return; }
   if(mode==='signup'){
-    if(users[u]){alert('That username is already taken. Try another.');return;}
-    users[u]={pass:p, bio:'', color:AVATARS[Math.floor(Math.random()*AVATARS.length)]}; save('df_users',users);
-  } else if(!users[u]||users[u].pass!==p){alert('Wrong username or password.');return;}
-  session=u; save('df_session',u);
+    const uname=(document.getElementById('authName').value.trim())||email.split('@')[0];
+    const {data,error}=await sb.auth.signUp({email,password:p,options:{data:{display_name:uname}}});
+    if(error){ authErr(error.message); return; }
+    if(!data.session){ authErr('Check your email to confirm your account, then log in.'); return; }
+    finishLogin(data.user);
+  } else {
+    const {data,error}=await sb.auth.signInWithPassword({email,password:p});
+    if(error){ authErr(error.message); return; }
+    finishLogin(data.user);
+  }
+}
+function finishLogin(user){
+  const uname = user.user_metadata?.display_name || user.email.split('@')[0];
+  session = uname;
+  users[uname] = users[uname] || {bio:'',color:AVATARS[Math.floor(Math.random()*AVATARS.length)]};
+  save('df_users',users);
   closeModal('authModal'); renderAccount(); go('home');
 }
 
@@ -563,6 +583,11 @@ function render(){
 
 renderAccount();
 render();
+sb.auth.getSession().then(({data})=>{
+  if(data.session){
+    finishLogin(data.session.user);
+  }
+});
 setTimeout(()=>{
   const s=document.getElementById('splash');
   if(s){ s.classList.add('hide'); setTimeout(()=>s.remove(),700); }
