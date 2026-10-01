@@ -157,7 +157,9 @@ textarea,input.ci{width:100%;padding:10px 14px;border:1.5px solid rgba(11,121,17
   background:linear-gradient(180deg, rgba(255,255,255,.75), rgba(255,255,255,.4));backdrop-filter:blur(4px);
   border:1px solid rgba(255,255,255,.7);box-shadow:0 4px 14px rgba(0,60,90,.1);}
 .avatar{width:64px;height:64px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;font-size:26px;font-weight:700;flex-shrink:0;
-  box-shadow:0 0 0 4px rgba(255,255,255,.75), 0 6px 14px rgba(0,60,90,.2);font-family:'Fredoka',sans-serif;}
+  box-shadow:0 0 0 4px rgba(255,255,255,.75), 0 6px 14px rgba(0,60,90,.2);font-family:'Fredoka',sans-serif;
+  position:relative;overflow:hidden;}
+.avatar::after{content:'';position:absolute;inset:0;background:linear-gradient(135deg, rgba(255,255,255,.5), rgba(255,255,255,0) 45%);pointer-events:none;}
 .avatar.sm{width:40px;height:40px;font-size:16px;}
 .convo-item{display:flex;gap:12px;align-items:center;padding:10px 12px;border-radius:14px;cursor:pointer;margin-bottom:8px;
   background:linear-gradient(180deg,#fff,#eaf8ff);border:1px solid rgba(255,255,255,.85);box-shadow:0 2px 6px rgba(0,60,90,.08);}
@@ -247,6 +249,18 @@ if(videos.length===0){
   save('df_videos',videos);
 }
 
+function getAvatarColors(u){
+  users[u] = users[u] || {bio:''};
+  if(!users[u].scheme){
+    users[u].scheme = Math.random()<0.5 ? 'blue' : 'green';
+    save('df_users',users);
+  }
+  const blue='#2FB6E0', green='#7ED957';
+  return users[u].scheme==='blue' ? {bg:green, fg:blue} : {bg:blue, fg:green};
+}
+function personIcon(fg){
+  return `<svg viewBox="0 0 36 36" style="width:58%;height:58%"><circle cx="18" cy="13" r="7" fill="${fg}"/><path d="M4 33c0-9.5 6.3-14.5 14-14.5S32 23.5 32 33" fill="${fg}"/></svg>`;
+}
 function esc(s){return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
 function timeAgo(t){const d=Math.floor((Date.now()-t)/86400000); return d<1?'today':d+'d ago';}
 
@@ -306,7 +320,7 @@ async function doAuth(mode){
 function finishLogin(user){
   const uname = user.user_metadata?.display_name || user.email.split('@')[0];
   session = uname;
-  users[uname] = users[uname] || {bio:'',color:AVATARS[Math.floor(Math.random()*AVATARS.length)]};
+  users[uname] = users[uname] || {bio:''};
   save('df_users',users);
   closeModal('authModal'); renderAccount(); go('home');
 }
@@ -327,7 +341,7 @@ function openEditProfile(){
 }
 function saveProfile(){
   const bio=document.getElementById('bioInput').value.trim();
-  users[session]=users[session]||{color:AVATARS[0]}; users[session].bio=bio;
+  users[session]=users[session]||{}; users[session].bio=bio;
   save('df_users',users); closeModal('profModal'); go('profile',session);
 }
 
@@ -507,11 +521,12 @@ function addComment(id){
 }
 
 function renderProfile(u){
-  const prof = users[u]||{bio:'',color:AVATARS[0]};
+  const ac = getAvatarColors(u);
+  const prof = users[u]||{bio:''};
   const mine = videos.filter(v=>v.uploader===u);
   const isSelf = session===u;
   return `<div class="profile-head">
-      <div class="avatar" style="background:${prof.color||AVATARS[0]}">${esc(u[0]||'?').toUpperCase()}</div>
+      <div class="avatar" style="background:${ac.bg}">${personIcon(ac.fg)}</div>
       <div>
         <h2 style="margin:0 0 4px">${esc(u)}</h2>
         <p style="color:var(--ink-500);font-size:13.5px;max-width:50ch;margin:0 0 10px">${esc(prof.bio)||'<i>No bio yet.</i>'}</p>
@@ -539,8 +554,9 @@ function renderInbox(){
   if(!convos.length) return `<div class="empty">No conversations yet — visit someone's profile and send a message.</div>`;
   return `<h2 class="section">Inbox</h2>` + convos.map(p=>{
     const last=[...messages].reverse().find(m=>(m.from===p||m.to===p)&&(m.from===session||m.to===session));
+    const ac=getAvatarColors(p);
     return `<div class="convo-item" onclick="go('thread','${p.replace(/'/g,"")}')">
-      <div class="avatar sm" style="background:${(users[p]&&users[p].color)||AVATARS[0]}">${esc(p[0]||'?').toUpperCase()}</div>
+      <div class="avatar sm" style="background:${ac.bg}">${personIcon(ac.fg)}</div>
       <div><h4 style="margin:0 0 2px">${esc(p)}</h4><p style="margin:0;color:var(--ink-500);font-size:12.5px">${esc(last?.text||'')}</p></div>
     </div>`;
   }).join('');
