@@ -268,7 +268,7 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 let users = load('df_users',{});
-let videos = load('df_videos',[]);
+let videos = [];
 let messages = load('df_messages',[]);
 let session = null;
 let view = {page:'home'};
@@ -278,22 +278,30 @@ let activeCat = 'All';
 const MAX_DUR = 7;
 let camStream=null, camRecorder=null, camChunks=[];
 
-if(videos.length===0){
+function rowToVideo(row){
+  return {id:row.id, title:row.title, desc:row.description||'', uploader:row.uploader,
+    cat:row.category||'New', src:row.video_url, views:row.views||0, likes:row.likes||0,
+    comments:[], date:new Date(row.created_at).getTime(),
+    color:AVATARS[Math.floor(Math.random()*AVATARS.length)]};
+}
+function seedDemoLocally(){
   const demo = [
     ['Charlie Bit My Finger — Again','funnyfamily','Popular','A family classic. He bit me!'],
     ['DIY Volcano: Kitchen Science','scikidz','Featured','Baking soda + vinegar = delicious chaos.'],
     ['My Cat Discovers Gravity','catlover99','Trending','Spoiler: gravity wins.'],
-    ['Epic Fail Buffet 2013','failarmy_fan','New','A little bit of everything, all of it painful.'],
-    ['How To Rickroll Your Friends','trollmaster','Featured','A timeless clip. Never gonna give it up.'],
-    ['One-Pot Pasta, No Excuses','noodlenick','Popular','Fifteen minutes, one pan, zero regrets.'],
   ];
-  demo.forEach((d,i)=>{
-    videos.push({id:'seed'+i,title:d[0],uploader:d[1],cat:d[2],desc:d[3],src:null,
-      color:['#2FB6E0','#0B79B0','#7ED957','#5CB833','#6FE3D6','#8FD6FF'][i%6],
-      views:Math.floor(Math.random()*90000)+500,likes:Math.floor(Math.random()*900),
-      comments:[{user:'viewer'+i,text:'This one hit the spot.'}],date:Date.now()-i*86400000});
-  });
-  save('df_videos',videos);
+  videos = demo.map((d,i)=>({id:'seed'+i,title:d[0],uploader:d[1],cat:d[2],desc:d[3],src:null,
+    color:AVATARS[i%AVATARS.length],views:500+i*120,likes:20+i*4,comments:[],date:Date.now()-i*86400000}));
+}
+async function loadVideos(){
+  const {data,error} = await sb.from('videos').select('*').order('created_at',{ascending:false});
+  if(error){
+    console.warn('Supabase videos table not reachable yet, showing local demo content instead.', error.message);
+    seedDemoLocally();
+  } else {
+    videos = data.map(rowToVideo);
+  }
+  render();
 }
 
 function getAvatarColors(u){
@@ -460,12 +468,8 @@ function beginRecording(){
   camRecorder.onstop = ()=>{
     clearInterval(tick);
     const blob=new Blob(camChunks,{type:'video/webm'});
-    const reader=new FileReader();
-    reader.onload=e=>{
-      const title=document.getElementById('upTitle2').value.trim()||'Untitled video';
-      finishUpload(e.target.result,title,'');
-    };
-    reader.readAsDataURL(blob);
+    const title=document.getElementById('upTitle2').value.trim()||'Untitled video';
+    finishUpload(blob,title,'');
   };
   camRecorder.start();
   setTimeout(()=>{ if(camRecorder.state!=='inactive') camRecorder.stop(); }, MAX_DUR*1000);
@@ -478,16 +482,23 @@ function doUpload(){
   const f=document.getElementById('upFile').files[0];
   const title=document.getElementById('upTitle').value.trim()||'Untitled video';
   const desc=document.getElementById('upDesc').value.trim();
-  if(f){ const r=new FileReader(); r.onload=e=>finishUpload(e.target.result,title,desc); r.readAsDataURL(f); }
-  else finishUpload(null,title,desc);
+  if(!f){ alert('Choose a video file first.'); return; }
+  finishUpload(f,title,desc);
 }
-function finishUpload(src,title,desc){
+async function finishUpload(fileOrBlob,title,desc){
   if(camStream){ camStream.getTracks().forEach(t=>t.stop()); camStream=null; }
-  videos.unshift({id:'v'+Date.now(),title,desc,uploader:session,cat:'New',src,
-    color:['#2FB6E0','#0B79B0','#7ED957','#6FE3D6','#8FD6FF'][Math.floor(Math.random()*5)],
-    views:0,likes:0,comments:[],date:Date.now()});
-  save('df_videos',videos);
-  closeModal('upModal'); go('watch',videos[0].id);
+  if(!session){ openAuth('login'); return; }
+  const ext = (fileOrBlob.type && fileOrBlob.type.split('/')[1]) || 'webm';
+  const path = `${session.replace(/[^a-z0-9]/gi,'_')}-${Date.now()}.${ext}`;
+  const {error:upErr} = await sb.storage.from('videos').upload(path, fileOrBlob, {contentType: fileOrBlob.type || 'video/webm'});
+  if(upErr){ alert('Upload failed: '+upErr.message); return; }
+  const {data:urlData} = sb.storage.from('videos').getPublicUrl(path);
+  const {data,error} = await sb.from('videos').insert({
+    title, description:desc, uploader:session, category:'New', video_url:urlData.publicUrl
+  }).select().single();
+  if(error){ alert('Could not save video: '+error.message); return; }
+  videos.unshift(rowToVideo(data));
+  closeModal('upModal'); go('watch',data.id);
 }
 
 function plate(v,cls){
@@ -513,6 +524,9 @@ function cardsHTML(list){
 }
 
 function renderHome(){
+  if(!videos.length){
+    return `${tabsHTML()}<div class="empty">Loading videos — or none uploaded yet. Be the first!</div>`;
+  }
   const featured = videos[0];
   const rest = videos.filter(v=>v.id!==featured.id && (activeCat==='All' || v.cat===activeCat));
   return `
@@ -528,10 +542,25 @@ function renderHome(){
     ${cardsHTML(rest)}`;
 }
 
+const viewedThisSession = new Set();
+function ensureComments(id){
+  if(id in commentsCache) return;
+  commentsCache[id] = [];
+  sb.from('comments').select('*').eq('video_id',id).order('created_at').then(({data})=>{
+    commentsCache[id] = data || [];
+    if(view.page==='watch' && view.arg===id) render();
+  });
+}
 function renderWatch(id){
   const v=videos.find(x=>x.id===id);
   if(!v) return `<div class="empty">That video isn't available anymore.</div>`;
-  v.views++; save('df_videos',videos);
+  if(!viewedThisSession.has(id)){
+    viewedThisSession.add(id);
+    v.views++;
+    sb.rpc('increment_views',{vid:id});
+  }
+  ensureComments(id);
+  const comments = commentsCache[id] || [];
   const related=videos.filter(x=>x.id!==id).slice(0,6);
   return `<div class="watch">
     <div>
@@ -545,12 +574,12 @@ function renderWatch(id){
         </span>
       </div>
       <div class="recipe"><b style="cursor:pointer" onclick="go('profile','${v.uploader.replace(/'/g,"")}')">${esc(v.uploader)}</b><br>${esc(v.desc)||'No description.'}</div>
-      <h3 style="font-size:15px">${v.comments.length} comments</h3>
+      <h3 style="font-size:15px">${comments.length} comments</h3>
       ${session
         ? `<input class="ci" id="cInput" placeholder="Add a comment...">
            <button class="btn btn-coral" onclick="addComment('${v.id}')">Post</button>`
         : `<div class="empty">Log in to join the conversation.</div>`}
-      <div>${v.comments.map(c=>`<div class="comment"><b>${esc(c.user)}</b> — ${esc(c.text)}</div>`).join('')}</div>
+      <div>${comments.map(c=>`<div class="comment"><b>${esc(c.author)}</b> — ${esc(c.body)}</div>`).join('')}</div>
     </div>
     <div class="side">
       <h3>Up next</h3>
@@ -560,23 +589,28 @@ function renderWatch(id){
     </div>
   </div>`;
 }
-function deleteVideo(id){
+async function deleteVideo(id){
   const v=videos.find(x=>x.id===id);
   if(!v || v.uploader!==session) return;
   if(!confirm('Delete this video? This can\'t be undone.')) return;
+  const {error} = await sb.from('videos').delete().eq('id',id);
+  if(error){ alert('Could not delete: '+error.message); return; }
   videos = videos.filter(x=>x.id!==id);
-  save('df_videos',videos);
   go('home');
 }
-function likeVid(id){
+async function likeVid(id){
   if(!session){openAuth('login');return;}
-  const v=videos.find(x=>x.id===id); v.likes++; save('df_videos',videos); go('watch',id);
+  const v=videos.find(x=>x.id===id); if(!v) return;
+  v.likes++; render();
+  await sb.rpc('increment_likes',{vid:id});
 }
-function addComment(id){
-  const v=videos.find(x=>x.id===id);
+async function addComment(id){
   const txt=document.getElementById('cInput').value.trim();
   if(!txt) return;
-  v.comments.push({user:session,text:txt}); save('df_videos',videos); go('watch',id);
+  const {error} = await sb.from('comments').insert({video_id:id, author:session, body:txt});
+  if(error){ alert('Could not post comment: '+error.message); return; }
+  delete commentsCache[id];
+  render();
 }
 
 function renderProfile(u){
@@ -688,6 +722,7 @@ if(savedTheme && savedTheme!=='aero') document.documentElement.setAttribute('dat
 
 renderAccount();
 render();
+loadVideos();
 sb.auth.getSession().then(({data})=>{
   if(data.session){
     finishLogin(data.session.user);
